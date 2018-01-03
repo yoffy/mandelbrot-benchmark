@@ -1,7 +1,7 @@
 TARGET=mandelbrot
 OBJS=mandelbrot.o
 LINK=$(CXX)
-CXXFLAGS=-pipe -Wall -O3  -fomit-frame-pointer -march=native -mfpmath=sse -msse2 -fopenmp   -mno-fma --std=c++14
+CXXFLAGS=-Wall -O3 -ffp-contract=off -fno-expensive-optimizations -march=native -fopenmp --std=c++14
 LDFLAGS=-fopenmp
 
 .PHONY: all

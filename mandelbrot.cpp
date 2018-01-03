@@ -4,130 +4,158 @@
 // Contributed by Kevin Miller ( as C code )
 //
 // Ported to C++ with minor changes by Dave Compton
+// Optimized to x86 by Kenta Yoshimura
 //
-// compile with following g++ flags
-//  -pipe -Wall -O3  -fomit-frame-pointer -march=native -mfpmath=sse -msse2 -fopenmp   -mno-fma --std=c++14 
+// Compile with following g++ flags
+// Use '-O3 -ffp-contract=off -fno-expensive-optimizations' instead of '-Ofast',
+// because FMA is fast, but different precision to original version
+//   -Wall -O3 -ffp-contract=off -fno-expensive-optimizations -march=native -fopenmp --std=c++14 mandelbrot.cpp
 
 #include <immintrin.h>
-#include <iostream>
-
-#ifdef __AVX__
-#define VEC_SIZE 4
-typedef __m256d Vec;
-#define VEC_INIT(value) (Vec){value,value,value,value}
-#else
-#define VEC_SIZE 2
-typedef __m128d Vec;
-#define VEC_INIT(value) (Vec){value,value}
-#endif
-
-#define LOOP_SIZE (8/VEC_SIZE)
+#include <stdio.h>
 
 using namespace std;
 
-int numDigits(long n)
-{
-    auto len = 0;
-    while(n)
+namespace {
+
+#if defined(__AVX512__)
+    constexpr int k_vec_size = 8;
+    typedef __m512d Vec;
+    Vec vec_init(double value)       { return _mm512_set1_pd(value); }
+    bool vec_is_any_le(Vec v, Vec f) { return bool(_mm512_cmple_pd_mask(v, f)); }
+    int vec_is_le(Vec v1, Vec v2)    { return _mm512_cmple_pd_mask(v1, v2); }
+    const int8_t k_bit_rev[] =
     {
-        n=n/10;
-        len++;
-    }
-    return len;
-}
-
-// Return true iff any of 8 members of double vector v is 
-// less than or equal to f.
-bool vec_le(double *v, double f)
-{
-    return (
-        v[0] <= f ||
-        v[1] <= f ||
-        v[2] <= f ||
-        v[3] <= f ||
-        v[4] <= f ||
-        v[5] <= f ||
-        v[6] <= f ||
-        v[7] <= f);
-}
-
-// Return 8 bit value with bits set iff cooresponding 
-// member of double vector v is less than or equal to f.
-int8_t pixels(double *v, double f)
-{
-    int8_t res = 0;
-    if(v[0] <= f) res |= 0b10000000;
-    if(v[1] <= f) res |= 0b01000000;
-    if(v[2] <= f) res |= 0b00100000;
-    if(v[3] <= f) res |= 0b00010000;
-    if(v[4] <= f) res |= 0b00001000;
-    if(v[5] <= f) res |= 0b00000100;
-    if(v[6] <= f) res |= 0b00000010;
-    if(v[7] <= f) res |= 0b00000001;
-    return res;
-}
-
-//
-// Do one iteration of mandelbrot calculation for a vector of eight 
-// complex values.  Using Vec to work with groups of doubles speeds
-// up computations.
-//
-inline void calcSum(double *r, double *i, double *sum, double const *init_r, Vec const &init_i)
-{
-    auto r_v = (Vec*)r;
-    auto i_v = (Vec*)i;
-    auto sum_v = (Vec*)sum;
-    auto init_r_v = (Vec const *)init_r;
-
-    for(auto vec=0; vec<LOOP_SIZE; vec++)
+        0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
+        0x08, 0x88, 0x48, 0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8,
+        0x04, 0x84, 0x44, 0xC4, 0x24, 0xA4, 0x64, 0xE4, 0x14, 0x94, 0x54, 0xD4, 0x34, 0xB4, 0x74, 0xF4,
+        0x0C, 0x8C, 0x4C, 0xCC, 0x2C, 0xAC, 0x6C, 0xEC, 0x1C, 0x9C, 0x5C, 0xDC, 0x3C, 0xBC, 0x7C, 0xFC,
+        0x02, 0x82, 0x42, 0xC2, 0x22, 0xA2, 0x62, 0xE2, 0x12, 0x92, 0x52, 0xD2, 0x32, 0xB2, 0x72, 0xF2,
+        0x0A, 0x8A, 0x4A, 0xCA, 0x2A, 0xAA, 0x6A, 0xEA, 0x1A, 0x9A, 0x5A, 0xDA, 0x3A, 0xBA, 0x7A, 0xFA,
+        0x06, 0x86, 0x46, 0xC6, 0x26, 0xA6, 0x66, 0xE6, 0x16, 0x96, 0x56, 0xD6, 0x36, 0xB6, 0x76, 0xF6,
+        0x0E, 0x8E, 0x4E, 0xCE, 0x2E, 0xAE, 0x6E, 0xEE, 0x1E, 0x9E, 0x5E, 0xDE, 0x3E, 0xBE, 0x7E, 0xFE,
+        0x01, 0x81, 0x41, 0xC1, 0x21, 0xA1, 0x61, 0xE1, 0x11, 0x91, 0x51, 0xD1, 0x31, 0xB1, 0x71, 0xF1,
+        0x09, 0x89, 0x49, 0xC9, 0x29, 0xA9, 0x69, 0xE9, 0x19, 0x99, 0x59, 0xD9, 0x39, 0xB9, 0x79, 0xF9,
+        0x05, 0x85, 0x45, 0xC5, 0x25, 0xA5, 0x65, 0xE5, 0x15, 0x95, 0x55, 0xD5, 0x35, 0xB5, 0x75, 0xF5,
+        0x0D, 0x8D, 0x4D, 0xCD, 0x2D, 0xAD, 0x6D, 0xED, 0x1D, 0x9D, 0x5D, 0xDD, 0x3D, 0xBD, 0x7D, 0xFD,
+        0x03, 0x83, 0x43, 0xC3, 0x23, 0xA3, 0x63, 0xE3, 0x13, 0x93, 0x53, 0xD3, 0x33, 0xB3, 0x73, 0xF3,
+        0x0B, 0x8B, 0x4B, 0xCB, 0x2B, 0xAB, 0x6B, 0xEB, 0x1B, 0x9B, 0x5B, 0xDB, 0x3B, 0xBB, 0x7B, 0xFB,
+        0x07, 0x87, 0x47, 0xC7, 0x27, 0xA7, 0x67, 0xE7, 0x17, 0x97, 0x57, 0xD7, 0x37, 0xB7, 0x77, 0xF7,
+        0x0F, 0x8F, 0x4F, 0xCF, 0x2F, 0xAF, 0x6F, 0xEF, 0x1F, 0x9F, 0x5F, 0xDF, 0x3F, 0xBF, 0x7F, 0xFF
+    };
+#elif defined(__AVX__)
+    constexpr int k_vec_size = 4;
+    typedef __m256d Vec;
+    Vec vec_init(double value)       { return _mm256_set1_pd(value); }
+    bool vec_is_any_le(Vec v, Vec f) { Vec m = v<=f; return ! _mm256_testz_pd(m, m); }
+    int vec_is_le(Vec v1, Vec v2)    { return _mm256_movemask_pd(v1 <= v2); }
+    const int8_t k_bit_rev[] =
     {
-        auto r2 = r_v[vec] * r_v[vec];
-        auto i2 = i_v[vec] * i_v[vec];
-        auto ri = r_v[vec] * i_v[vec];
+        0b0000, 0b1000, 0b0100, 0b1100, 0b0010, 0b1010, 0b0110, 0b1110,
+        0b0001, 0b1001, 0b0101, 0b1101, 0b0011, 0b1011, 0b0111, 0b1111
+    };
+#else
+    constexpr int k_vec_size = 2;
+    typedef __m128d Vec;
+    Vec vec_init(double value)       { return _mm_set1_pd(value); }
+    bool vec_is_any_le(Vec v, Vec f) { __m128i m = __m128i(v<=f); return ! _mm_testz_si128(m, m); }
+    int vec_is_le(Vec v1, Vec v2)    { return _mm_movemask_pd(v1 <= v2); }
+    const int8_t k_bit_rev[] = { 0b00, 0b10, 0b01, 0b11 };
+#endif
 
-        sum_v[vec] = r2 + i2;
+    constexpr int k_loop_size = 8/k_vec_size;
 
-        r_v[vec]=r2 - i2 + init_r_v[vec];
-        i_v[vec]=ri + ri + init_i;
-    }
-}
-
-//
-// Do 50 iterations of mandelbrot calculation for a vector of eight 
-// complex values.  Check occasionally to see if the iterated results
-// have wandered beyond the point of no return (> 4.0).
-//
-inline int8_t mand8(double *init_r, double iy)
-{
-    double r[8], i[8], sum[8];
-    for(auto k=0; k<8; k++)
+    // Return true iff any of 8 members of double vector v is
+    // less than or equal to f.
+    bool vec_le(double *v, double f)
     {
-        r[k]=init_r[k];
-        i[k]=iy;
-    }
-
-    auto init_i = VEC_INIT(iy);
-
-    int8_t pix = 0xff;
-
-    for (auto j = 0; j < 10; j++)
-    {
-        for(auto k=0; k<5; k++)
-            calcSum(r, i, sum, init_r, init_i);
-
-        if (!vec_le(sum, 4.0))
+        Vec* v_v = (Vec*)v;
+        auto v_f = vec_init(f);
+        for(auto i=0; i<k_loop_size; i++)
         {
-            pix = 0x00;
-            break;
+            if ( vec_is_any_le(v_v[i], v_f) ) return true;
+        }
+        return false;
+    }
+
+    // Return 8 bit value with bits set iff cooresponding
+    // member of double vector v is less than or equal to f.
+    int8_t pixels(const double *v, double f)
+    {
+        int8_t res = 0;
+        const Vec* v_v = (const Vec*)v;
+        auto v_f = vec_init(f);
+        for(auto i=0; i<k_loop_size; i++)
+        {
+            res <<= k_vec_size;
+            res |= k_bit_rev[vec_is_le(v_v[i], v_f)];
+        }
+        return res;
+    }
+
+    //
+    // Do one iteration of mandelbrot calculation for a vector of eight
+    // complex values.  Using Vec to work with groups of doubles speeds
+    // up computations.
+    //
+    void calcSum(double *r, double *i, double *sum, double const *init_r, Vec const &init_i)
+    {
+        auto r_v = (Vec*)r;
+        auto i_v = (Vec*)i;
+        auto sum_v = (Vec*)sum;
+        auto init_r_v = (Vec const *)init_r;
+
+        for(auto vec=0; vec<k_loop_size; vec++)
+        {
+            auto r2 = r_v[vec] * r_v[vec];
+            auto i2 = i_v[vec] * i_v[vec];
+            auto ri = r_v[vec] * i_v[vec];
+
+            sum_v[vec] = r2 + i2;
+
+            r_v[vec]=r2 - i2 + init_r_v[vec];
+            i_v[vec]=ri + ri + init_i;
         }
     }
-    if (pix)
+
+    //
+    // Do 50 iterations of mandelbrot calculation for a vector of eight
+    // complex values.  Check occasionally to see if the iterated results
+    // have wandered beyond the point of no return (> 4.0).
+    //
+    int8_t mand8(double *init_r, double iy)
     {
-        pix = pixels(sum, 4.0);
+        double r[8], i[8], sum[8];
+        for(auto k=0; k<8; k++)
+        {
+            r[k]=init_r[k];
+            i[k]=iy;
+        }
+
+        auto init_i = vec_init(iy);
+
+        int8_t pix = 0xff;
+
+        for (auto j = 0; j < 10; j++)
+        {
+            for(auto k=0; k<5; k++)
+                calcSum(r, i, sum, init_r, init_i);
+
+            if (!vec_le(sum, 4.0))
+            {
+                pix = 0x00;
+                break;
+            }
+        }
+        if (pix)
+        {
+            pix = pixels(sum, 4.0);
+        }
+
+        return pix;
     }
 
-    return pix;
-}
+} // namespace
 
 int main(int argc, char ** argv)
 {
@@ -140,7 +168,7 @@ int main(int argc, char ** argv)
     }
 
     // round up to multiple of 8
-    wid_ht = (wid_ht+7) & ~7;  
+    wid_ht = (wid_ht+7) & ~7;
 
     // allocate memory for pixels.
     auto dataLength = wid_ht*(wid_ht>>3);
@@ -155,7 +183,7 @@ int main(int argc, char ** argv)
 
     // generate the bitmap
 
-    // process 8 pixels (one byte) at a time    
+    // process 8 pixels (one byte) at a time
     #pragma omp parallel for schedule(guided)
     for(auto y=0; y<wid_ht; y++)
     {
@@ -164,13 +192,13 @@ int main(int argc, char ** argv)
         auto rowstart = y*wid_ht/8;
         for(auto x=0; x<wid_ht; x+=8)
         {
-            pixels[rowstart + x/8] = mand8(r0+x,iy); 
+            pixels[rowstart + x/8] = mand8(r0+x,iy);
         }
     }
 
     // write the data
-    cout << "P4\n" << wid_ht << " " << wid_ht << "\n";
-    cout.write(pixels, dataLength);
+    printf("P4\n%d %d\n", wid_ht, wid_ht);
+    fwrite(pixels, 1, dataLength, stdout);
     delete[] pixels;
 
     return 0;

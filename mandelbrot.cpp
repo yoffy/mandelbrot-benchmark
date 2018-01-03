@@ -13,18 +13,18 @@
 
 #include <immintrin.h>
 #include <stdio.h>
+#include <stdint.h>
 
 using namespace std;
 
 namespace {
 
-#if defined(__AVX512__)
-    constexpr int k_vec_size = 8;
+#if defined(__AVX512BW__)
     typedef __m512d Vec;
     Vec vec_init(double value)       { return _mm512_set1_pd(value); }
-    bool vec_is_any_le(Vec v, Vec f) { return bool(_mm512_cmple_pd_mask(v, f)); }
-    int vec_is_le(Vec v1, Vec v2)    { return _mm512_cmple_pd_mask(v1, v2); }
-    const int8_t k_bit_rev[] =
+    bool vec_is_any_le(Vec v, Vec f) { return bool(_mm512_cmp_pd_mask(v, f, _CMP_LE_OS)); }
+    int vec_is_le(Vec v1, Vec v2)    { return _mm512_cmp_pd_mask(v1, v2, _CMP_LE_OS); }
+    const uint8_t k_bit_rev[] =
     {
         0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
         0x08, 0x88, 0x48, 0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8,
@@ -44,51 +44,45 @@ namespace {
         0x0F, 0x8F, 0x4F, 0xCF, 0x2F, 0xAF, 0x6F, 0xEF, 0x1F, 0x9F, 0x5F, 0xDF, 0x3F, 0xBF, 0x7F, 0xFF
     };
 #elif defined(__AVX__)
-    constexpr int k_vec_size = 4;
     typedef __m256d Vec;
     Vec vec_init(double value)       { return _mm256_set1_pd(value); }
     bool vec_is_any_le(Vec v, Vec f) { Vec m = v<=f; return ! _mm256_testz_pd(m, m); }
     int vec_is_le(Vec v1, Vec v2)    { return _mm256_movemask_pd(v1 <= v2); }
-    const int8_t k_bit_rev[] =
+    const uint8_t k_bit_rev[] =
     {
         0b0000, 0b1000, 0b0100, 0b1100, 0b0010, 0b1010, 0b0110, 0b1110,
         0b0001, 0b1001, 0b0101, 0b1101, 0b0011, 0b1011, 0b0111, 0b1111
     };
-#else
-    constexpr int k_vec_size = 2;
+#elif defined(__SSE4_1__)
     typedef __m128d Vec;
     Vec vec_init(double value)       { return _mm_set1_pd(value); }
     bool vec_is_any_le(Vec v, Vec f) { __m128i m = __m128i(v<=f); return ! _mm_testz_si128(m, m); }
     int vec_is_le(Vec v1, Vec v2)    { return _mm_movemask_pd(v1 <= v2); }
-    const int8_t k_bit_rev[] = { 0b00, 0b10, 0b01, 0b11 };
+    const uint8_t k_bit_rev[] = { 0b00, 0b10, 0b01, 0b11 };
 #endif
 
-    constexpr int k_loop_size = 8/k_vec_size;
+    constexpr int k_vec_size = sizeof(Vec) / sizeof(double);
 
-    // Return true iff any of 8 members of double vector v is
-    // less than or equal to f.
-    bool vec_le(double *v, double f)
+    // Return true iff all of 8 members of vector v1 is
+    // NOT less than or equal to v2.
+    bool vec_all_nle(const Vec* v1, Vec v2)
     {
-        Vec* v_v = (Vec*)v;
-        auto v_f = vec_init(f);
-        for(auto i=0; i<k_loop_size; i++)
-        {
-            if ( vec_is_any_le(v_v[i], v_f) ) return true;
+        for ( auto i = 0; i < 8/k_vec_size; i++ ) {
+            if ( vec_is_any_le(v1[i], v2) ) {
+                return false;
+            }
         }
-        return false;
+        return true;
     }
 
     // Return 8 bit value with bits set iff cooresponding
-    // member of double vector v is less than or equal to f.
-    int8_t pixels(const double *v, double f)
+    // member of vector value is less than or equal to limit.
+    unsigned pixels(const Vec* value, Vec limit)
     {
-        int8_t res = 0;
-        const Vec* v_v = (const Vec*)v;
-        auto v_f = vec_init(f);
-        for(auto i=0; i<k_loop_size; i++)
-        {
+        unsigned res = 0;
+        for ( auto i = 0; i < 8/k_vec_size; i++ ) {
             res <<= k_vec_size;
-            res |= k_bit_rev[vec_is_le(v_v[i], v_f)];
+            res |= k_bit_rev[vec_is_le(value[i], limit)];
         }
         return res;
     }
@@ -98,23 +92,17 @@ namespace {
     // complex values.  Using Vec to work with groups of doubles speeds
     // up computations.
     //
-    void calcSum(double *r, double *i, double *sum, double const *init_r, Vec const &init_i)
+    void calcSum(Vec* real, Vec* imag, Vec* sum, const Vec* init_real, Vec init_imag)
     {
-        auto r_v = (Vec*)r;
-        auto i_v = (Vec*)i;
-        auto sum_v = (Vec*)sum;
-        auto init_r_v = (Vec const *)init_r;
+        for ( auto vec = 0; vec < 8/k_vec_size; vec++ ) {
+            auto r2 = real[vec] * real[vec];
+            auto i2 = imag[vec] * imag[vec];
+            auto ri = real[vec] * imag[vec];
 
-        for(auto vec=0; vec<k_loop_size; vec++)
-        {
-            auto r2 = r_v[vec] * r_v[vec];
-            auto i2 = i_v[vec] * i_v[vec];
-            auto ri = r_v[vec] * i_v[vec];
+            sum[vec] = r2 + i2;
 
-            sum_v[vec] = r2 + i2;
-
-            r_v[vec]=r2 - i2 + init_r_v[vec];
-            i_v[vec]=ri + ri + init_i;
+            real[vec]=r2 - i2 + init_real[vec];
+            imag[vec]=ri + ri + init_imag;
         }
     }
 
@@ -123,36 +111,27 @@ namespace {
     // complex values.  Check occasionally to see if the iterated results
     // have wandered beyond the point of no return (> 4.0).
     //
-    int8_t mand8(double *init_r, double iy)
+    unsigned mand8(const Vec* init_real, Vec init_imag)
     {
-        double r[8], i[8], sum[8];
-        for(auto k=0; k<8; k++)
-        {
-            r[k]=init_r[k];
-            i[k]=iy;
+        Vec k4_0 = vec_init(4.0);
+        Vec real[8 / k_vec_size];
+        Vec imag[8 / k_vec_size];
+        Vec sum[8 / k_vec_size];
+        for ( auto k = 0; k < 8/k_vec_size; k++ ) {
+            real[k] = init_real[k];
+            imag[k] = init_imag;
         }
 
-        auto init_i = vec_init(iy);
-
-        int8_t pix = 0xff;
-
-        for (auto j = 0; j < 10; j++)
-        {
-            for(auto k=0; k<5; k++)
-                calcSum(r, i, sum, init_r, init_i);
-
-            if (!vec_le(sum, 4.0))
-            {
-                pix = 0x00;
-                break;
+        for ( auto j = 0; j < 10; j++ ) {
+            for ( auto k = 0; k < 5; k++ ) {
+                calcSum(real, imag, sum, init_real, init_imag);
+            }
+            if ( vec_all_nle(sum, k4_0) ) {
+                return 0;
             }
         }
-        if (pix)
-        {
-            pix = pixels(sum, 4.0);
-        }
 
-        return pix;
+        return pixels(sum, k4_0);
     }
 
 } // namespace
@@ -162,42 +141,42 @@ int main(int argc, char ** argv)
     // get width/height from arguments
 
     auto wid_ht = 16000;
-    if (argc >= 2)
-    {
+    if ( argc >= 2 ) {
         wid_ht = atoi(argv[1]);
     }
 
     // round up to multiple of 8
-    wid_ht = (wid_ht+7) & ~7;
+    wid_ht = -(-wid_ht & -8);
+    auto width = wid_ht;
+    auto height = wid_ht;
 
     // allocate memory for pixels.
-    auto dataLength = wid_ht*(wid_ht>>3);
-    auto pixels = new char[dataLength];
+    auto dataLength = height*(width>>3);
+    auto pixels = new uint8_t[dataLength];
 
     // calculate initial x values, store in r0
-    double r0[wid_ht];
-    for(auto x=0; x<wid_ht; x++)
-    {
-        r0[x] = 2.0 / wid_ht * x - 1.5;
+    Vec r0[width / k_vec_size];
+    double* r0_ = reinterpret_cast<double*>(r0);
+    for ( auto x = 0; x < width; x++ ) {
+        r0_[x] = 2.0 / width * x - 1.5;
     }
 
     // generate the bitmap
 
     // process 8 pixels (one byte) at a time
     #pragma omp parallel for schedule(guided)
-    for(auto y=0; y<wid_ht; y++)
-    {
+    for ( auto y = 0; y < height; y++ ) {
         // all 8 pixels have same y value (iy).
-        auto iy = 2.0 / wid_ht *  y - 1.0;
-        auto rowstart = y*wid_ht/8;
-        for(auto x=0; x<wid_ht; x+=8)
-        {
-            pixels[rowstart + x/8] = mand8(r0+x,iy);
+        auto iy = 2.0 / height *  y - 1.0;
+        Vec init_imag = vec_init(iy);
+        auto rowstart = y*width/8;
+        for ( auto x = 0; x < width; x += 8 ) {
+            pixels[rowstart + x/8] = mand8(&r0[x/k_vec_size], init_imag);
         }
     }
 
     // write the data
-    printf("P4\n%d %d\n", wid_ht, wid_ht);
+    printf("P4\n%d %d\n", width, height);
     fwrite(pixels, 1, dataLength, stdout);
     delete[] pixels;
 

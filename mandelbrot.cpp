@@ -59,6 +59,12 @@ namespace {
     bool vec_is_any_le(Vec v, Vec f) { __m128i m = __m128i(v<=f); return ! _mm_testz_si128(m, m); }
     int vec_is_le(Vec v1, Vec v2)    { return _mm_movemask_pd(v1 <= v2); }
     const uint8_t k_bit_rev[] = { 0b00, 0b10, 0b01, 0b11 };
+#elif defined(__SSSE3__)
+    typedef __m128d Vec;
+    Vec vec_init(double value)       { return _mm_set1_pd(value); }
+    bool vec_is_any_le(Vec v, Vec f) { return bool(_mm_movemask_pd(v<=f)); }
+    int vec_is_le(Vec v1, Vec v2)    { return _mm_movemask_pd(v1 <= v2); }
+    const uint8_t k_bit_rev[] = { 0b00, 0b10, 0b01, 0b11 };
 #endif
 
     constexpr int k_vec_size = sizeof(Vec) / sizeof(double);

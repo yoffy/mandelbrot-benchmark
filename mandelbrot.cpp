@@ -117,7 +117,7 @@ namespace {
     // complex values.  Check occasionally to see if the iterated results
     // have wandered beyond the point of no return (> 4.0).
     //
-    unsigned mand8(const Vec* init_real, Vec init_imag)
+    unsigned mand8(bool to_prune, const Vec* init_real, Vec init_imag)
     {
         Vec k4_0 = vec_init(4.0);
         Vec real[8 / k_vec_size];
@@ -128,13 +128,27 @@ namespace {
             imag[k] = init_imag;
         }
 
-        for ( auto j = 0; j < 10; j++ ) {
-            for ( auto k = 0; k < 5; k++ ) {
-                calcSum(real, imag, sum, init_real, init_imag);
+        if ( to_prune ) {
+            // 4*12 + 2 = 50
+            for ( auto j = 0; j < 12; j++ ) {
+                for ( auto k = 0; k < 4; k++ ) {
+                    calcSum(real, imag, sum, init_real, init_imag);
+                }
+                if ( vec_all_nle(sum, k4_0) ) {
+                    return 0; // prune
+                }
             }
-            if ( vec_all_nle(sum, k4_0) ) {
-                return 0;
+            calcSum(real, imag, sum, init_real, init_imag);
+            calcSum(real, imag, sum, init_real, init_imag);
+        } else {
+            // 6*8 + 2 = 50
+            for ( auto j = 0; j < 8; j++ ) {
+                for ( auto k = 0; k < 6; k++ ) {
+                    calcSum(real, imag, sum, init_real, init_imag);
+                }
             }
+            calcSum(real, imag, sum, init_real, init_imag);
+            calcSum(real, imag, sum, init_real, init_imag);
         }
 
         return pixels(sum, k4_0);
@@ -176,8 +190,11 @@ int main(int argc, char ** argv)
         auto iy = 2.0 / height *  y - 1.0;
         Vec init_imag = vec_init(iy);
         auto rowstart = y*width/8;
+        bool to_prune = false;
         for ( auto x = 0; x < width; x += 8 ) {
-            pixels[rowstart + x/8] = mand8(&r0[x/k_vec_size], init_imag);
+            auto res = mand8(to_prune, &r0[x/k_vec_size], init_imag);
+            pixels[rowstart + x/8] = res;
+            to_prune = ! res;
         }
     }
 
